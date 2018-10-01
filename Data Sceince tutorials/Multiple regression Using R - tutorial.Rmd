@@ -1,0 +1,96 @@
+---
+title: "Multiple Regression Tutorial"
+author: "Abhinandan Mohan Raj"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+
+
+
+
+
+Setting the working directory
+```{r}
+
+setwd("C://Books//machinelearning_udemy//Multiple regression//Multiple_Linear_Regression")
+```
+
+Importing the datasets
+
+```{R}
+dataset= read.csv('C://Books//machinelearning_udemy//Multiple regression//Multiple_Linear_Regression//50_Startups.csv')
+
+head(dataset)
+
+```
+
+Multiple regression cannot be performed on categorical variables. Hence categorical variables are converted to dummy variables using the factor() function. Factor() will return all categorical variable with codes corresponding to each categorical variable.
+
+```{r}
+dataset$State=factor(dataset$State,
+                       levels = c('New York', 'California', 'Florida'),
+                       labels = c(1, 2, 3))
+head(dataset)
+```
+
+On the state column, we can notice that "New york", "California" and "Florida" are converted to 1,2,3.
+
+Now we will split the dataset into training and test data.
+```{r}
+library(caTools)
+set.seed(123)
+split = sample.split(dataset$Profit, SplitRatio = 0.8)
+training_set = subset(dataset, split == TRUE)
+test_set = subset(dataset, split == FALSE)
+```
+
+Now we will use the lm() to fit the linear regression to the training data.
+```{r}
+regressor = lm(formula = Profit ~ .,
+               data = training_set)
+summary(regressor)
+```
+
+The first variable in the formula is the dependant variable and . signifies the group of all predictors. We are here creating an object regressor using the lm () class and then fitting it to the training set.
+
+We can observe the P-values of all predictors. Those predictors with p-values less than 0.05 are alone statistically significant and they are represented by ***.Predictors with higher p-values are not useful on inluding in the model as they are statistically significant
+
+We will predict the test data using the predict()
+```{r}
+y_pred = predict(regressor, newdata = test_set)
+
+```
+
+BACKWARD ELIMINATION:
+Backward elimination is a model selection method that is used to select the optimal subset of predictors that are statistically significant on the variable of interest. It will reject predictors with higher p-values and retain those with lesser p-values.
+
+
+We will use a function to perform backward elimination.
+```{r}
+backwardElimination <- function(x, sl) {
+    numVars = length(x)
+    for (i in c(1:numVars)){
+      regressor = lm(formula = Profit ~ ., data = x)
+      maxVar = max(coef(summary(regressor))[c(2:numVars), "Pr(>|t|)"])
+      if (maxVar > sl){
+        j = which(coef(summary(regressor))[c(2:numVars), "Pr(>|t|)"] == maxVar)
+        x = x[, -j]
+      }
+      numVars = numVars - 1
+    }
+    return(summary(regressor))
+  }
+  
+  SL = 0.05
+  dataset = dataset[, c(1,2,3,4,5)]
+  backwardElimination(training_set, SL)
+
+```
+
+
+And thus from the analysis, we can conclude that the only variable that is statistically significantis R&D spend. R&D spend alone is enough to explain the variation the independant variable Profit.
+
+
+
