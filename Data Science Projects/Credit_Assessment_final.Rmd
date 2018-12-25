@@ -1,0 +1,229 @@
+---
+title: "Credit_Assessment"
+author: "Ankit Raina, Anil Bulusu, Abhinandan Mohan Raj, Archita Jain"
+date: "November 28, 2018"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Loading required libraries
+```{r}
+library(tidyverse)
+library(lattice)
+library(ggplot2)
+library(corrplot)
+library(GGally)
+library(caret)
+library(ggthemes)
+library(DT)
+library(tidyr)
+library(dplyr)
+library(caret)
+library(pROC)
+library(gains)
+library(e1071)
+library(randomForest)
+library(MASS)
+```
+
+# Setting the scientific notation to off
+```{r}
+options(scipen = 999)
+```
+
+# Reading the file containing the credit data
+```{r}
+credit_data.df <- read.csv('loan.csv', na.strings = c("","NA"))
+```
+
+# Feature Selection: Dropping all those columns in the data set that have more than 10 % values as NA
+```{r}
+na_percentage_by_column <-sapply(credit_data.df, function(x) (sum(length(which(is.na(x))))/ nrow(credit_data.df)) * 100 )
+columns_to_delete <- names(na_percentage_by_column[na_percentage_by_column > 10])
+```
+
+# Removing columns found to be not useful for modelling data
+```{r}
+columns_related_to_principal_payment_recovery <- c('total_rec_prncp', 'total_pymnt', 'last_pymnt_amnt', 'total_pymnt_inv', 'out_prncp', 'out_prncp_inv', 'total_rec_int', 'funded_amnt_inv', 'funded_amnt', 'loan_status', 'recoveries', 'collection_recovery_fee', 'total_rec_late_fee')
+columns_to_delete <- append(columns_to_delete, columns_related_to_principal_payment_recovery)
+
+columns_not_contribute_to_model <- c('id', 'member_id', 'emp_title', 'issue_d', 'url', 'title', 'zip_code', 'earliest_cr_line', 'last_credit_pull_d', 'last_pymnt_d', 'sub_grade', 'policy_code')
+columns_to_delete <- append(columns_to_delete, columns_not_contribute_to_model)
+
+credit_data.df <- credit_data.df[,-which(names(credit_data.df) %in% columns_to_delete)]
+```
+
+# Grouping the grades A,B,C and D as good score and hence labelling as 1. Grades E,F,G are labelled as 0
+```{r}
+credit_data.df$loan_approval = ifelse(credit_data.df$grade %in% c("A","B"),1,0)
+credit_data.df$loan_approval = factor(credit_data.df$loan_approval, labels = c("Reject", "Approve"))
+```
+
+
+
+Data Visualization
+
+People have borrowed loans for various reasons. Understanding the borrower's purpose for loan using a  BAR chart
+
+```{r}
+credit_data.df %>% group_by(purpose) %>% dplyr::summarise(count=n()) %>% mutate(pct=count/sum(count))%>% 
+  ggplot(aes(x = reorder(purpose, pct), y = pct)) + geom_bar(stat = "identity", fill = "purple", aes(color = I('black')), size = 0.1) + 
+xlab("Purpose of Loan") + ylab("Percent")+ coord_flip()
+```
+
+People have borrowed from any states across USA. Out of which, people from California have borrowed the most
+```{r}
+
+options(repr.plot.width=6, repr.plot.height=20)
+#vii. State
+credit_data.df %>% group_by(addr_state) %>% dplyr::summarise(count=n()) %>% mutate(pct=count/sum(count))%>% 
+  ggplot(aes(x = reorder(addr_state, pct), y = pct)) + geom_bar(stat = "identity", fill = "blue", aes(color = I('black')), size = 0.1) + xlab("State Wise Loan") + ylab("Percent") + theme(axis.text.x = element_text(angle = 90, hjust = 1)) + ggtitle("State wise breakdown of borrowers")
+
+```
+
+One of the important factors in calculating the credit history of an individual is the Tenure of an individual. The work experience of an individual influences the credit history.
+
+
+```{r}
+options(scipen=999)
+ggplot(credit_data.df,aes(x=emp_length,fill=emp_length))+geom_bar(stat="count")+labs(x="Employment Length",title="Distribution of Employment Length") + theme(axis.text.x = element_text(angle = 90, hjust = 1))
+
+```
+
+Distribution of interest rates across all grades.
+
+```{r}
+
+ggplot(credit_data.df , aes(x = grade , y = credit_data.df$int_rate  , fill = grade)) + 
+        geom_boxplot() + 
+        theme_igray() + 
+        labs(y = 'Interest Rate' , x = 'Grade') + ggtitle("Interest rates for each credit grade")
+```
+
+Varoius purposes of loan among all grades 
+```{r}
+ggplot(data=credit_data.df, aes(x=grade, fill=purpose)) +
+  geom_bar()  
+
+```
+
+
+
+# Data Cleaning: Removing rows with NA
+```{r}
+credit_data.df <- credit_data.df %>% drop_na()
+```
+
+# Randomly selecting about 50K records from the entire data set
+```{r}
+credit_data.df <- credit_data.df %>% sample_frac(.06)
+```
+
+# Data Preprocessing : Normalizing the data set
+```{r}
+ind <- sapply(credit_data.df, is.numeric)
+credit_data.df[ind] <- lapply(credit_data.df[ind], scale)
+```
+
+# Data Partitioning: Creating training, validation and test data sets
+```{r}
+set.seed(300)
+
+spec = c(train = .6, test = .2, validation = .2)
+
+g = sample(cut(
+  seq(nrow(credit_data.df)), 
+  nrow(credit_data.df)*cumsum(c(0,spec)),
+  labels = names(spec)
+))
+
+partitioned_data = split(credit_data.df, g)
+
+credit_data_train.df <- partitioned_data$train
+credit_data_validation.df <- partitioned_data$validation
+credit_data_test.df <- partitioned_data$test
+```
+
+# Functions to create Lift Chart, Decile Chart
+```{r}
+create_lift_and_decile_chart <- function(probability){
+
+chart_data <- as.data.frame(cbind(probability, credit_data_validation.df$loan_approval))
+colnames(chart_data) <- c('approval_propensity', 'actual')
+lift_chart <- lift(relevel(as.factor(actual), ref='2') ~ approval_propensity, data = chart_data)
+xyplot(lift_chart, plot = "gain")
+
+chart_data$actual <- as.numeric(chart_data$actual)
+gain <- gains(chart_data$actual, chart_data$approval_propensity)
+barplot(gain$mean.resp/ mean(chart_data$actual), names.arg = gain$depth, xlab = 'Percentile', ylab = 'Mean Response', main = 'Decile-wise Lift Chart', ylim = c(0,1.8))
+}
+```
+
+# Running logistic regression model on the validation data set
+```{r}
+glm.fit <- glm (loan_approval ~ int_rate+loan_amnt+installment+term+annual_inc+emp_length+verification_status+dti+revol_util+tot_cur_bal, data = credit_data_train.df, family = binomial(link='logit'))
+
+summary(glm.fit)
+
+thresh_hold <- 0.7
+
+glm.validation.probs <- predict(glm.fit,newdata=credit_data_validation.df,type = 'response')
+
+glm.validation.class <- as.factor(ifelse(glm.validation.probs > thresh_hold, "Approve", "Reject"))
+
+confusionMatrix(data = glm.validation.class, reference = credit_data_validation.df$loan_approval, positive = "Approve")
+
+create_lift_and_decile_chart(glm.validation.probs)
+```
+
+# Running linear discriminant analyis model on the validation data
+```{r}
+lda.fit <- lda(loan_approval ~ int_rate+loan_amnt+installment+term+annual_inc+emp_length+verification_status+dti+revol_util+tot_cur_bal, data = credit_data_train.df)
+
+summary(lda.fit)
+
+lda.validation <- predict(lda.fit, credit_data_validation.df)
+
+confusionMatrix(data = lda.validation$class, reference = credit_data_validation.df$loan_approval, positive = "Approve")
+
+create_lift_and_decile_chart(lda.validation$posterior[,'Approve'])
+```
+
+# Running naive bayes classification model on the validation dataset
+```{r}
+naive_bayes.fit <- naiveBayes(loan_approval ~ int_rate+loan_amnt+installment+term+annual_inc+emp_length+verification_status+dti+revol_util+tot_cur_bal,data = credit_data_train.df, laplace = 1)
+
+summary(naive_bayes.fit)
+
+naive_bayes.validation.probs <- predict(naive_bayes.fit, credit_data_validation.df, type='raw')
+
+naive_bayes.validation.class <- as.factor(ifelse(naive_bayes.validation.probs[,'Approve'] > thresh_hold, "Approve", "Reject"))
+
+confusionMatrix(data = naive_bayes.validation.class, reference = credit_data_validation.df$loan_approval, positive = "Approve")
+
+create_lift_and_decile_chart(naive_bayes.validation.probs[,'Approve'])
+```
+
+# Running random forest model on the validation dataset
+```{r}
+random_forest.fit <- randomForest(loan_approval ~ int_rate+installment+term+tot_coll_amt+annual_inc+emp_length+verification_status+dti+revol_util+tot_cur_bal,data = credit_data_train.df, importance = T)
+
+summary(random_forest.fit)
+
+thresh_hold <- 0.7 
+
+random_forest.validation.prob <- predict(random_forest.fit, credit_data_validation.df, type = "vote")
+
+random_forest.validation.class <- as.factor(ifelse(random_forest.validation.prob[,'Approve'] > thresh_hold, "Approve", "Reject"))
+
+confusionMatrix(data = random_forest.validation.class, reference = credit_data_validation.df$loan_approval, positive = "Approve")
+
+create_lift_and_decile_chart(random_forest.validation.prob[,'Approve'])
+```
+
+
+
+
